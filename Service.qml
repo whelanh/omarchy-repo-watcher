@@ -178,6 +178,12 @@ Item {
   // first fetch of a repo is a baseline: nothing is flagged new and nothing is
   // notified, so adding a busy repo does not announce its whole history.
   function applyRepo(fullName, items) {
+    items.sort(function(a, b) { return b.epoch - a.epoch })
+    // The "max items" preference is a display cap per repository: fetch enough
+    // of each category, then keep only the newest N across all of them.
+    var cap = root.maxEvents
+    if (cap > 0 && items.length > cap) items = items.slice(0, cap)
+
     var seen = root.config.seen || {}
     var state = seen[fullName] || null
     var baseline = state === null || state === undefined

@@ -507,7 +507,7 @@ Panel {
               }
 
               NumberField {
-                label: "Items per category"
+                label: "Max items per repository"
                 value: root.service ? root.service.config.maxEvents : 50
                 from: 1
                 to: 100

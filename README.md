@@ -56,7 +56,7 @@ settings view:
 | `notify` | `true` | Send a desktop notification on new activity. |
 | `autoRefresh` | `true` | Poll once at startup, then once a day. |
 | `refreshHours` | `24` | Automatic poll interval in hours. |
-| `maxEvents` | `50` | Items fetched per category per repo (max 100). |
+| `maxEvents` | `50` | Max items shown per repository (1–100). |
 
 ## GitHub token
 
@@ -84,7 +84,6 @@ Codeberg does not need a token.
 
 ```bash
 omarchy plugin validate .
-node tests/model.test.js
 qmllint -I "$OMARCHY_PATH/shell" Panel.qml Service.qml
 ```
 
