@@ -7,8 +7,8 @@
   "license": "MIT",
   "homepage": "https://github.com/whelanh/omarchy-repo-watcher",
   "repository": "https://github.com/whelanh/omarchy-repo-watcher",
-  "description": "Watch GitHub and Codeberg repositories you don't own: new commits, issues, pull requests, discussions, and releases, with an unread badge and optional notifications.",
-  "keywords": ["github", "codeberg", "repositories", "watch", "commits", "issues", "pull-requests", "releases", "discussions", "monitor"],
+  "description": "Watch GitHub, Codeberg, and SourceForge repositories you don't own: new commits, issues, pull requests, discussions, and releases, with an unread badge and optional notifications.",
+  "keywords": ["github", "codeberg", "sourceforge", "repositories", "watch", "commits", "issues", "pull-requests", "releases", "discussions", "rss", "monitor"],
   "kinds": [
     "service",
     "bar-widget"
@@ -19,7 +19,7 @@
   },
   "barWidget": {
     "displayName": "Repo Watcher",
-    "description": "New commits, issues, pull requests, discussions and releases for GitHub and Codeberg repositories you follow.",
+    "description": "New commits, issues, pull requests, discussions and releases for GitHub, Codeberg, and SourceForge repositories you follow.",
     "category": "Developer",
     "allowMultiple": false,
     "defaultSection": "right"

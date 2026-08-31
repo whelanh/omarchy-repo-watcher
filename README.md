@@ -70,7 +70,7 @@ Without a token GitHub allows **60 requests/hour**; with one it allows
 issues + pull requests, releases), so a token is recommended for more than a
 couple of repositories. Discussions are fetched through GitHub's GraphQL API,
 which always requires a token — without one, discussions are simply skipped.
-Codeberg does not need a token.
+Codeberg and SourceForge do not need a token.
 
 1. Create a *fine-grained* token at <https://github.com/settings/tokens> with
    read-only access to public repositories (no write/private scopes needed).
