@@ -169,11 +169,12 @@ function fetchTasks(repoKey, maxEvents, token) {
 function graphqlDiscussions(r, n, token) {
   var query = "query { repository(owner: \"" + r.owner + "\", name: \"" + r.repo + "\") { discussions(first: " + n + ", orderBy: { field: UPDATED_AT, direction: DESC }) { nodes { number title url createdAt author { login } } } } }"
   var body = JSON.stringify({ query: query })
+  var t = String(token === undefined || token === null ? "" : token).replace(/^\s+|\s+$/g, "")
   return [
     "curl", "-sS", "--max-time", "20", "--max-filesize", String(MAX_JSON_BYTES),
     "-H", "Accept: application/vnd.github+json",
     "-H", "User-Agent: omarchy-repo-watcher",
-    "-H", "Authorization: Bearer " + token,
+    "-H", "Authorization: Bearer " + t,
     "-H", "Content-Type: application/json",
     "-X", "POST",
     "-d", body,

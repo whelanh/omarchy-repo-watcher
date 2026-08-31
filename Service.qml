@@ -289,7 +289,11 @@ Item {
 
   function updatePrefs(patch) {
     var c = root.config
-    for (var key in patch) c[key] = patch[key]
+    for (var key in patch) {
+      c[key] = key === "token"
+        ? String(patch[key] === undefined || patch[key] === null ? "" : patch[key]).replace(/^\s+|\s+$/g, "")
+        : patch[key]
+    }
     root.commitConfig()
     root.saveConfig()
   }

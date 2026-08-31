@@ -136,6 +136,13 @@ Panel {
     root.view = "feed"
   }
 
+  // Commit the token explicitly: editingFinished alone is not reliable here,
+  // because clicking Done does not move focus off the (non-focusable) field.
+  function commitSettings() {
+    if (root.service) root.service.updatePrefs({ token: tokenField.text })
+    root.leaveSettings()
+  }
+
   property string tokenDraft: ""
 
   Timer {
@@ -430,7 +437,7 @@ Panel {
               foreground: root.foreground
               accent: Color.accent
               fontFamily: root.fontFamily
-              onClicked: root.leaveSettings()
+              onClicked: root.commitSettings()
             }
 
             PanelSectionHeader {
