@@ -133,6 +133,16 @@ function repoForgeLabel(key) {
   return r ? FORGES[r.forge].label : ""
 }
 
+// Short display name for a repo key: "owner/repo" for GitHub and Codeberg,
+// just the project name for SourceForge. Compact enough for the per-repo tabs;
+// the full key stays in the list and feed headers for disambiguation.
+function repoLabel(key) {
+  var r = parseRepoKey(key)
+  if (!r) return String(key || "")
+  if (r.forge === "sourceforge") return r.repo
+  return r.owner + "/" + r.repo
+}
+
 // A stable hue (0-359) for a repo key, so each repository gets a consistent,
 // distinguishable accent dot without any stored state.
 function repoHue(key) {
@@ -543,6 +553,7 @@ if (typeof module !== "undefined") {
     parseRepoKey: parseRepoKey,
     repoWebUrl: repoWebUrl,
     repoForgeLabel: repoForgeLabel,
+    repoLabel: repoLabel,
     repoHue: repoHue,
     fetchTasks: fetchTasks,
     curlGet: curlGet,

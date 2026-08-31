@@ -160,7 +160,7 @@ Panel {
     open: root.opened
     centerOnBar: true
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(520))
+    contentWidth: panel.fittedContentWidth(Style.space(640))
     contentHeight: panel.fittedContentHeight(contentColumn.implicitHeight)
 
     PanelKeyCatcher {
@@ -356,7 +356,7 @@ Panel {
 
                     Button {
                       required property var modelData
-                      text: modelData === "" ? "All" : modelData
+                      text: modelData === "" ? "All" : Model.repoLabel(modelData)
                       active: root.selectedRepo === modelData
                       foreground: root.foreground
                       accent: Color.accent
