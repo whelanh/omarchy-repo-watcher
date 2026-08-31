@@ -155,10 +155,13 @@ function fetchTasks(repoKey, maxEvents, token) {
   var forge = FORGES[r.forge]
   var n = clampPage(maxEvents)
   var base = forge.apiBase + "/repos/" + r.owner + "/" + r.repo
+  // The token is a GitHub credential; sending it to another forge (Codeberg)
+  // makes that forge reject it as a malformed token of its own.
+  var auth = r.forge === "github" ? token : ""
   var tasks = [
-    { repo: repoKey, kind: "commits", argv: curlGet(base + "/commits?" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, token) },
-    { repo: repoKey, kind: "issues", argv: curlGet(base + "/issues?state=all&" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, token) },
-    { repo: repoKey, kind: "releases", argv: curlGet(base + "/releases?" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, token) }
+    { repo: repoKey, kind: "commits", argv: curlGet(base + "/commits?" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, auth) },
+    { repo: repoKey, kind: "issues", argv: curlGet(base + "/issues?state=all&" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, auth) },
+    { repo: repoKey, kind: "releases", argv: curlGet(base + "/releases?" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, auth) }
   ]
   if (r.forge === "github" && String(token || "").trim() !== "") {
     tasks.push({ repo: repoKey, kind: "discussions", argv: graphqlDiscussions(r, n, token) })
