@@ -188,12 +188,24 @@ Panel {
             foreground: root.foreground
             fontFamily: root.fontFamily
             trailingControl: Component {
-              PanelActionButton {
-                iconText: "\uf021"
-                tooltipText: "Refresh now"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.refresh()
+              Row {
+                spacing: Style.space(2)
+
+                PanelActionButton {
+                  iconText: "\uf021"
+                  tooltipText: "Refresh now"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.refresh()
+                }
+
+                PanelActionButton {
+                  iconText: "\uf013"
+                  tooltipText: "Settings"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.enterSettings()
+                }
               }
             }
           }
