@@ -143,7 +143,15 @@ Item {
   }
 
   function noteError(repo, message) {
-    if (root.lastError === "") root.lastError = repo + ": " + message
+    if (root.lastError !== "") return
+    var msg = String(message || "")
+    if (/rate limit/i.test(msg)) {
+      // The limit is shared across every GitHub repository, not a property of
+      // this one — attribute it globally and make the fix obvious.
+      root.lastError = "GitHub rate limit reached (60/hour without a token) \u00b7 add a token in Settings"
+    } else {
+      root.lastError = repo + ": " + msg
+    }
   }
 
   function handleStdout(raw) {
