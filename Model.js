@@ -1,11 +1,12 @@
-// GitHub Watch — pure parsing and normalization helpers, shared by the QML
+// Repo Watcher — pure parsing and normalization helpers, shared by the QML
 // (Service.qml / Panel.qml / BarWidget.qml) and unit-testable under node.
 // Deliberately Qt-free so nothing here depends on the QML runtime.
 //
-// Forges are supported through per-forge API bases. GitHub and Codeberg
+// Forges are supported through per-forge endpoints. GitHub and Codeberg
 // (Gitea/Forgejo) share near-identical REST shapes for commits, issues, pull
-// requests, and releases, so one parser serves both. Discussions are a
-// GitHub-only feature and require a token (GraphQL always authenticates).
+// requests, and releases, so one parser serves both. SourceForge exposes only
+// an RSS commit feed. Discussions are a GitHub-only feature and require a
+// token (GraphQL always authenticates).
 
 var MAX_JSON_BYTES = 1048576
 
@@ -35,9 +36,11 @@ var DEFAULTS = {
 
 // Per-forge endpoints. `pageParam` differs between GitHub (per_page) and
 // Gitea/Forgejo (limit). `webBase` is used to open a repository in a browser.
+// SourceForge has no REST API here — commits come from its RSS feed.
 var FORGES = {
   github: { label: "GitHub", apiBase: "https://api.github.com", webBase: "https://github.com", pageParam: "per_page" },
-  codeberg: { label: "Codeberg", apiBase: "https://codeberg.org/api/v1", webBase: "https://codeberg.org", pageParam: "limit" }
+  codeberg: { label: "Codeberg", apiBase: "https://codeberg.org/api/v1", webBase: "https://codeberg.org", pageParam: "limit" },
+  sourceforge: { label: "SourceForge", apiBase: "https://sourceforge.net", webBase: "https://sourceforge.net", pageParam: "" }
 }
 
 // ---------------------------------------------------------------------------
@@ -45,8 +48,9 @@ var FORGES = {
 // ---------------------------------------------------------------------------
 //
 // A watched repo is stored as a canonical key string:
-//   github   -> "owner/repo"
-//   codeberg -> "codeberg.org/owner/repo"
+//   github      -> "owner/repo"
+//   codeberg    -> "codeberg.org/owner/repo"
+//   sourceforge -> "sourceforge.net/project"
 // GitHub stays bare so existing configs and the common case read naturally;
 // any other forge carries its host, which disambiguates it and encodes the
 // forge at the same time.
@@ -68,13 +72,22 @@ function normalizeRepoUrl(input) {
   }
   var known = (host === "github.com" || host === "www.github.com") ? "github"
     : (host === "codeberg.org") ? "codeberg"
+    : (host === "sourceforge.net" || host === "www.sourceforge.net") ? "sourceforge"
     : (host === "" ? "github" : null)
   if (known === null) return null
 
-  text = text.replace(/\.git$/, "")
   text = text.replace(/[?#].*$/, "")
   text = text.replace(/^\/+|\/+$/g, "")
 
+  // SourceForge identifies a repository by a single project name, not
+  // owner/repo. Accept the project page and the raw feed URL alike.
+  if (known === "sourceforge") {
+    var project = sourceforgeProject(text)
+    if (!project) return null
+    return { forge: "sourceforge", owner: "", repo: project, key: "sourceforge.net/" + project }
+  }
+
+  text = text.replace(/\.git$/, "")
   var parts = text.split("/").filter(function(p) { return p !== "" })
   if (parts.length < 2) return null
   var owner = parts[0]
@@ -85,10 +98,22 @@ function normalizeRepoUrl(input) {
   return { forge: known, owner: owner, repo: repo, key: key }
 }
 
+// Extract a SourceForge project name from a path like "p/scidvspc/code/feed",
+// "p/scidvspc", "projects/scidvspc", or "scidvspc".
+function sourceforgeProject(text) {
+  var parts = String(text || "").split("/").filter(function(p) { return p !== "" })
+  if (parts.length === 0) return null
+  if (parts[0] === "p" || parts[0] === "projects") return parts.length >= 2 ? parts[1] : null
+  var project = parts[0]
+  return /^[A-Za-z0-9._-]+$/.test(project) ? project : null
+}
+
 // Parse a stored key back into its parts, or null for anything unrecognized.
 function parseRepoKey(key) {
   var k = String(key === undefined || key === null ? "" : key).replace(/^\s+|\s+$/g, "")
   if (k === "") return null
+  var s = k.match(/^sourceforge\.net\/([^/]+)$/)
+  if (s) return { forge: "sourceforge", owner: "", repo: s[1], key: k }
   var m = k.match(/^codeberg\.org\/([^/]+)\/([^/]+)$/)
   if (m) return { forge: "codeberg", owner: m[1], repo: m[2], key: k }
   var g = k.match(/^([^/]+)\/([^/]+)$/)
@@ -99,6 +124,7 @@ function parseRepoKey(key) {
 function repoWebUrl(key) {
   var r = parseRepoKey(key)
   if (!r) return ""
+  if (r.forge === "sourceforge") return FORGES.sourceforge.webBase + "/p/" + r.repo
   return FORGES[r.forge].webBase + "/" + r.owner + "/" + r.repo
 }
 
@@ -148,10 +174,15 @@ function curlGet(url, maxTimeSec, maxBytes, token) {
 
 // One fetch task per endpoint. "issues" covers both issues and pull requests:
 // the issues endpoint returns PRs too (they carry a `pull_request` field), so
-// one request serves both kinds and halves the rate-limit cost.
+// one request serves both kinds and halves the rate-limit cost. SourceForge
+// only offers an RSS commit feed, so it is a single task.
 function fetchTasks(repoKey, maxEvents, token) {
   var r = parseRepoKey(repoKey)
   if (!r) return []
+  if (r.forge === "sourceforge") {
+    var feed = "https://sourceforge.net/p/" + r.repo + "/code/feed"
+    return [{ repo: repoKey, kind: "rss", argv: curlGet(feed, 20, MAX_JSON_BYTES, "") }]
+  }
   var forge = FORGES[r.forge]
   var n = clampPage(maxEvents)
   var base = forge.apiBase + "/repos/" + r.owner + "/" + r.repo
@@ -231,6 +262,9 @@ function parseResponse(kind, raw, repoKey, status) {
   if (status !== 0 && status !== 200) {
     return { items: [], error: errorMessage(raw, status) }
   }
+
+  // SourceForge returns an RSS feed rather than JSON.
+  if (kind === "rss") return { items: parseRss(raw, repoKey), error: "" }
 
   var data
   try { data = JSON.parse(String(raw || "")) } catch (e) {
@@ -323,6 +357,70 @@ function parseDiscussionNodes(nodes, repoKey) {
       d.number, null, "created"))
   }
   return out
+}
+
+// ---------------------------------------------------------------------------
+// SourceForge RSS
+// ---------------------------------------------------------------------------
+
+// Parse a SourceForge commit RSS feed into commit items. The feed is regular
+// RSS 2.0: each <item> carries <title>, <link>, <dc:creator>, and <pubDate>.
+function parseRss(raw, repoKey) {
+  var out = []
+  var text = String(raw || "")
+  var itemRe = /<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/g
+  var m
+  while ((m = itemRe.exec(text)) !== null) {
+    var block = m[1]
+    var title = rssField(block, "title")
+    var link = rssField(block, "link")
+    var creator = rssField(block, "creator") || rssField(block, "author")
+    if (title === "" && link === "") continue
+    out.push(makeItem("commit", repoKey, parseRfc2822(rssField(block, "pubDate")),
+      link, commitTitle(title), creator, null, null, "pushed"))
+  }
+  out.sort(function(a, b) { return b.epoch - a.epoch })
+  return out
+}
+
+// Extract a tag's text content, tolerating a namespace prefix (dc:creator).
+function rssField(block, name) {
+  var re = new RegExp("<(?:[A-Za-z0-9_-]+:)?" + name + "(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z0-9_-]+:)?" + name + ">", "i")
+  var m = String(block || "").match(re)
+  if (!m) return ""
+  var value = m[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").replace(/^\s+|\s+$/g, "")
+  return decodeXml(value)
+}
+
+function decodeXml(value) {
+  return String(value || "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&")
+}
+
+var RFC2822_MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 }
+
+// Parse an RFC 2822 date like "Sun, 30 Aug 2026 04:05:57 -0000" to epoch ms.
+// Hand-written rather than Date.parse, whose RFC 2822 support is spotty in
+// the QML runtime.
+function parseRfc2822(value) {
+  var s = String(value || "").replace(/^\s+|\s+$/g, "")
+  var m = s.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s+(.+)$/)
+  if (!m) return 0
+  var day = parseInt(m[1], 10)
+  var month = RFC2822_MONTHS[m[2]]
+  if (month === undefined) return 0
+  var year = parseInt(m[3], 10)
+  var offset = 0
+  var zone = m[7].replace(/^\s+|\s+$/g, "")
+  if (/^[+-]\d{4}$/.test(zone)) {
+    var sign = zone.charAt(0) === "-" ? -1 : 1
+    offset = sign * (parseInt(zone.substr(1, 2), 10) * 60 + parseInt(zone.substr(3, 2), 10))
+  }
+  return Date.UTC(year, month, day, parseInt(m[4], 10), parseInt(m[5], 10), parseInt(m[6], 10)) - offset * 60000
 }
 
 function makeItem(kind, repo, epoch, url, title, author, number, ref, action) {
@@ -451,6 +549,8 @@ if (typeof module !== "undefined") {
     rejectOversized: rejectOversized,
     splitHttpStatus: splitHttpStatus,
     parseResponse: parseResponse,
+    parseRss: parseRss,
+    parseRfc2822: parseRfc2822,
     commitTitle: commitTitle,
     kindLabel: kindLabel,
     kindPluralLabel: kindPluralLabel,

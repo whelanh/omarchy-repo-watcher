@@ -1,27 +1,31 @@
 # Repo Watcher for Omarchy
 
 An Omarchy Quattro bar widget with a repo glyph and an unread badge that
-watches repositories you are interested in (but don't own) on **GitHub** and
-**Codeberg**, and surfaces their recent activity in a popup panel with a
-per-repository tab for each one.
+watches repositories you are interested in (but don't own) on **GitHub**,
+**Codeberg**, and **SourceForge**, and surfaces their recent activity in a
+popup panel with a per-repository tab for each one.
 
 Plugin id: `io.github.whelanh.repo-watcher`
 
 ## What it does
 
-- **Commits** — the latest commits on the default branch.
-- **Issues** — open and closed issues.
-- **Pull requests** — open and closed pull requests.
+- **Commits** — the latest commits (GitHub and Codeberg on the default branch;
+  SourceForge via its commit RSS feed).
+- **Issues** — open and closed issues (GitHub and Codeberg).
+- **Pull requests** — open and closed pull requests (GitHub and Codeberg).
 - **Releases** — published releases (GitHub and Codeberg).
 - **Discussions** — GitHub discussions (requires a token; see below).
 
-Activity is fetched from each repository's dedicated API endpoints (not the
-aggregate events feed), so commits, issues, pull requests, and releases all
-show up instead of being crowded out by stars and watches. The panel shows an
-`All` view plus one tab per watched repository, each marked with a stable
-color dot, so you can read one repository at a time without scrolling through
-the rest. The bar pill carries a red unread badge; new items inside the panel
-carry an accent dot, and closing the panel marks them read.
+SourceForge exposes only a commit feed, so a SourceForge repository reports
+commits and nothing else; everything else works the same as the other forges.
+
+Activity is fetched from each repository's own endpoints (not the aggregate
+events feed), so commits, issues, pull requests, and releases all show up
+instead of being crowded out by stars and watches. The panel shows an `All`
+view plus one tab per watched repository, each marked with a stable color dot,
+so you can read one repository at a time without scrolling through the rest.
+The bar pill carries a red unread badge; new items inside the panel carry an
+accent dot, and closing the panel marks them read.
 
 ## Install
 
@@ -37,8 +41,9 @@ omarchy bar move io.github.whelanh.repo-watcher --section right
   refresh now.
 - **Right click** the glyph to mark everything read.
 - Add a repository by pasting any of `https://github.com/owner/repo`,
-  `owner/repo`, `git@github.com:owner/repo.git`, or
-  `https://codeberg.org/owner/repo`.
+  `owner/repo`, `git@github.com:owner/repo.git`, `https://codeberg.org/owner/repo`,
+  or a SourceForge project URL such as
+  `https://sourceforge.net/p/scidvspc/code/feed`.
 - Click a repository's row to open it in the browser, or click any individual
   event to open that commit/issue/PR/release.
 - `Tab` / `Shift+Tab` switches to the neighbouring bar panel.
@@ -74,8 +79,8 @@ Codeberg does not need a token.
 
 ## Data and privacy
 
-- Talks only to the public APIs of GitHub and Codeberg, for the repositories
-  you add.
+- Talks only to the public APIs/feeds of GitHub, Codeberg, and SourceForge, for
+  the repositories you add.
 - The token, if set, is stored in `~/.config/omarchy/repo-watcher/config.json`.
 - Does not request elevated privileges, runs no background service, and starts
   no second Quickshell process (the polling lives in the shell's own service).

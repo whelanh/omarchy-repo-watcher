@@ -230,7 +230,7 @@ Panel {
               TextField {
                 id: repoField
                 width: parent.width - addButton.width - parent.spacing
-                placeholderText: "github.com/owner/repo or codeberg.org/owner/repo"
+                placeholderText: "github.com/owner/repo, codeberg.org/owner/repo, or sourceforge.net/p/project"
                 foreground: root.foreground
                 onAccepted: root.addRepo()
               }
