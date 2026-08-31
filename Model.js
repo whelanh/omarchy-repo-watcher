@@ -112,11 +112,11 @@ function sourceforgeProject(text) {
 function parseRepoKey(key) {
   var k = String(key === undefined || key === null ? "" : key).replace(/^\s+|\s+$/g, "")
   if (k === "") return null
-  var s = k.match(/^sourceforge\.net\/([^/]+)$/)
+  var s = k.match(/^sourceforge\.net\/([A-Za-z0-9._-]+)$/)
   if (s) return { forge: "sourceforge", owner: "", repo: s[1], key: k }
-  var m = k.match(/^codeberg\.org\/([^/]+)\/([^/]+)$/)
+  var m = k.match(/^codeberg\.org\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/)
   if (m) return { forge: "codeberg", owner: m[1], repo: m[2], key: k }
-  var g = k.match(/^([^/]+)\/([^/]+)$/)
+  var g = k.match(/^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/)
   if (g) return { forge: "github", owner: g[1], repo: g[2], key: k }
   return null
 }
@@ -163,6 +163,10 @@ function clampPage(n) {
   return v
 }
 
+// Build a GET request. Returns { argv, stdin }: `stdin` carries the
+// Authorization header (if any) so the token never appears in `argv`, which
+// is world-readable via /proc/<pid>/cmdline. The caller writes `stdin` to the
+// process and closes it; curl reads the header with `-H @-`.
 function curlGet(url, maxTimeSec, maxBytes, token) {
   var cap = parseInt(maxBytes, 10)
   if (!isFinite(cap) || cap < 1) cap = MAX_JSON_BYTES
@@ -174,12 +178,16 @@ function curlGet(url, maxTimeSec, maxBytes, token) {
     "-H", "User-Agent: omarchy-repo-watcher"
   ]
   var t = String(token === undefined || token === null ? "" : token).replace(/^\s+|\s+$/g, "")
-  if (t !== "") argv.push("-H", "Authorization: Bearer " + t)
+  var stdin = ""
+  if (t !== "") {
+    argv.push("-H", "@-")
+    stdin = "Authorization: Bearer " + t + "\n"
+  }
   // No -f: HTTP errors are distinguished by the trailing status code rather
   // than by curl exiting, so a 404 (e.g. Gitea/Forgejo's empty-releases
   // endpoint) can be handled as "no items" instead of a hard failure.
   argv.push("-w", "\n%{http_code}", url)
-  return argv
+  return { argv: argv, stdin: stdin }
 }
 
 // One fetch task per endpoint. "issues" covers both issues and pull requests:
@@ -191,7 +199,7 @@ function fetchTasks(repoKey, maxEvents, token) {
   if (!r) return []
   if (r.forge === "sourceforge") {
     var feed = "https://sourceforge.net/p/" + r.repo + "/code/feed"
-    return [{ repo: repoKey, kind: "rss", argv: curlGet(feed, 20, MAX_JSON_BYTES, "") }]
+    return [makeTask(repoKey, "rss", curlGet(feed, 20, MAX_JSON_BYTES, ""))]
   }
   var forge = FORGES[r.forge]
   var n = clampPage(maxEvents)
@@ -200,31 +208,38 @@ function fetchTasks(repoKey, maxEvents, token) {
   // makes that forge reject it as a malformed token of its own.
   var auth = r.forge === "github" ? token : ""
   var tasks = [
-    { repo: repoKey, kind: "commits", argv: curlGet(base + "/commits?" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, auth) },
-    { repo: repoKey, kind: "issues", argv: curlGet(base + "/issues?state=all&" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, auth) },
-    { repo: repoKey, kind: "releases", argv: curlGet(base + "/releases?" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, auth) }
+    makeTask(repoKey, "commits", curlGet(base + "/commits?" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, auth)),
+    makeTask(repoKey, "issues", curlGet(base + "/issues?state=all&" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, auth)),
+    makeTask(repoKey, "releases", curlGet(base + "/releases?" + forge.pageParam + "=" + n, 15, MAX_JSON_BYTES, auth))
   ]
   if (r.forge === "github" && String(token || "").trim() !== "") {
-    tasks.push({ repo: repoKey, kind: "discussions", argv: graphqlDiscussions(r, n, token) })
+    tasks.push(makeTask(repoKey, "discussions", graphqlDiscussions(r, n, token)))
   }
   return tasks
+}
+
+function makeTask(repo, kind, request) {
+  return { repo: repo, kind: kind, argv: request.argv, stdin: request.stdin }
 }
 
 function graphqlDiscussions(r, n, token) {
   var query = "query { repository(owner: \"" + r.owner + "\", name: \"" + r.repo + "\") { discussions(first: " + n + ", orderBy: { field: UPDATED_AT, direction: DESC }) { nodes { number title url createdAt author { login } } } } }"
   var body = JSON.stringify({ query: query })
   var t = String(token === undefined || token === null ? "" : token).replace(/^\s+|\s+$/g, "")
-  return [
-    "curl", "-sS", "--max-time", "20", "--max-filesize", String(MAX_JSON_BYTES),
-    "-H", "Accept: application/vnd.github+json",
-    "-H", "User-Agent: omarchy-repo-watcher",
-    "-H", "Authorization: Bearer " + t,
-    "-H", "Content-Type: application/json",
-    "-X", "POST",
-    "-d", body,
-    "-w", "\n%{http_code}",
-    "https://api.github.com/graphql"
-  ]
+  return {
+    argv: [
+      "curl", "-sS", "--max-time", "20", "--max-filesize", String(MAX_JSON_BYTES),
+      "-H", "Accept: application/vnd.github+json",
+      "-H", "User-Agent: omarchy-repo-watcher",
+      "-H", "@-",
+      "-H", "Content-Type: application/json",
+      "-X", "POST",
+      "-d", body,
+      "-w", "\n%{http_code}",
+      "https://api.github.com/graphql"
+    ],
+    stdin: "Authorization: Bearer " + t + "\n"
+  }
 }
 
 function rejectOversized(raw, maxBytes) {

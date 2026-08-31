@@ -250,6 +250,7 @@ Panel {
               visible: root.errorText !== ""
               width: parent.width
               text: root.errorText
+              textFormat: Text.PlainText
               color: root.bar ? root.bar.urgent : Color.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -281,6 +282,7 @@ Panel {
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
                     text: modelData
+                    textFormat: Text.PlainText
                     color: root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
@@ -402,6 +404,7 @@ Panel {
                     Text {
                       width: parent.width - Style.space(14)
                       text: modelData.repo
+                      textFormat: Text.PlainText
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.bodySmall
@@ -578,6 +581,7 @@ Panel {
         id: title
         width: parent.width
         text: event.title
+        textFormat: Text.PlainText
         color: row.foreground
         font.family: row.fontFamily
         font.pixelSize: Style.font.body
@@ -589,6 +593,7 @@ Panel {
         id: sub
         width: parent.width
         text: row.subText
+        textFormat: Text.PlainText
         color: row.dim
         font.family: row.fontFamily
         font.pixelSize: Style.font.caption

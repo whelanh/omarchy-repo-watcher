@@ -124,6 +124,9 @@ Item {
     if (root.fetchTasks.length === 0) { root.finishRefresh(); return }
     root.currentTask = root.fetchTasks.shift()
     fetchProc.command = root.currentTask.argv
+    // Open stdin only for requests that carry an Authorization header, so the
+    // token can be written to curl's `-H @-` and never appears in argv.
+    fetchProc.stdinEnabled = root.currentTask.stdin !== ""
     fetchProc.running = true
   }
 
@@ -369,6 +372,15 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.handleStdout(text)
+    }
+    onStarted: {
+      // The process is running and stdin is open; write the Authorization
+      // header (if any) and close stdin so curl's `-H @-` sees EOF and stops
+      // reading.
+      if (root.currentTask && root.currentTask.stdin !== "") {
+        fetchProc.write(root.currentTask.stdin)
+        fetchProc.stdinEnabled = false
+      }
     }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
