@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.whelanh.repo-watcher",
+  "name": "Repo Watcher",
+  "version": "1.0.0",
+  "author": "Hugh Whelan",
+  "license": "MIT",
+  "homepage": "https://github.com/whelanh/omarchy-repo-watcher",
+  "repository": "https://github.com/whelanh/omarchy-repo-watcher",
+  "description": "Watch GitHub and Codeberg repositories you don't own: new commits, issues, pull requests, discussions, and releases, with an unread badge and optional notifications.",
+  "keywords": ["github", "codeberg", "repositories", "watch", "commits", "issues", "pull-requests", "releases", "discussions", "monitor"],
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Repo Watcher",
+    "description": "New commits, issues, pull requests, discussions and releases for GitHub and Codeberg repositories you follow.",
+    "category": "Developer",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
