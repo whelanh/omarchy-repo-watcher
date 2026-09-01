@@ -173,7 +173,7 @@ function curlGet(url, maxTimeSec, maxBytes, token) {
   var secs = parseInt(maxTimeSec, 10)
   if (!isFinite(secs) || secs < 1) secs = 15
   var argv = [
-    "curl", "-sS", "--max-time", String(secs), "--max-filesize", String(cap),
+    "curl", "-q", "-sS", "--max-time", String(secs), "--max-filesize", String(cap),
     "-H", "Accept: application/vnd.github+json",
     "-H", "User-Agent: omarchy-repo-watcher"
   ]
@@ -228,7 +228,7 @@ function graphqlDiscussions(r, n, token) {
   var t = String(token === undefined || token === null ? "" : token).replace(/^\s+|\s+$/g, "")
   return {
     argv: [
-      "curl", "-sS", "--max-time", "20", "--max-filesize", String(MAX_JSON_BYTES),
+      "curl", "-q", "-sS", "--max-time", "20", "--max-filesize", String(MAX_JSON_BYTES),
       "-H", "Accept: application/vnd.github+json",
       "-H", "User-Agent: omarchy-repo-watcher",
       "-H", "@-",

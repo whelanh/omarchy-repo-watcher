@@ -43,6 +43,10 @@ Item {
   property int lastAutoRefresh: 0
   property bool bootPolled: false
 
+  // Config-write coalescing (see saveConfig/flushSave).
+  property string pendingSave: ""
+  property bool saveBusy: false
+
   readonly property bool autoRefresh: config.autoRefresh === true
   readonly property bool notify: config.notify === true
   readonly property int refreshHours: config.refreshHours
@@ -58,12 +62,13 @@ Item {
   // Config file
   // ---------------------------------------------------------------------------
 
+  // The FileView is read/watch-only. Writes go through saveConfig(), which
+  // writes via a shell so the token-bearing file is created with mode 0600.
   FileView {
     id: configFile
     path: root.configPath
     watchChanges: true
     printErrors: false
-    atomicWrites: true
     onLoaded: root.applyConfig(text())
     onLoadFailed: root.applyConfig("")
     onFileChanged: reload()
@@ -85,9 +90,23 @@ Item {
     }
   }
 
+  // Persist the config with a private mode. Writes are coalesced: a burst of
+  // saves during a refresh writes once, and a save requested mid-write is
+  // flushed when the current one finishes. The file holds an optional GitHub
+  // token, so it must not be created world-readable.
   function saveConfig() {
-    var text = JSON.stringify(root.config, null, 2) + "\n"
-    configFile.setText(text)
+    root.pendingSave = JSON.stringify(root.config, null, 2) + "\n"
+    if (!root.saveBusy) root.flushSave()
+  }
+
+  function flushSave() {
+    if (root.saveBusy || root.pendingSave === "") return
+    root.saveBusy = true
+    saveProc.command = ["sh", "-c",
+      "umask 077; mkdir -p \"$1\" && chmod 700 \"$1\" && cat > \"$2.tmp\" && chmod 600 \"$2.tmp\" && mv -f \"$2.tmp\" \"$2\"",
+      "sh", root.configDir, root.configPath]
+    saveProc.stdinEnabled = true
+    saveProc.running = true
   }
 
   // Reassign `config` to a fresh object so QML bindings that read nested
@@ -137,6 +156,7 @@ Item {
       root.applyRepo(repo, items)
     }
     root.accumulator = ({})
+    root.saveConfig()
     root.busy = false
     root.lastUpdated = Date.now()
     if (root.batchNotify.length > 0) {
@@ -212,7 +232,6 @@ Item {
 
     root.rebuild()
     root.commitConfig()
-    root.saveConfig()
 
     if (toNotify.length > 0) root.batchNotify = root.batchNotify.concat(toNotify)
   }
@@ -362,9 +381,30 @@ Item {
   // Processes
   // ---------------------------------------------------------------------------
 
+  // One-time setup + migration: create the directory private (0700) and, if a
+  // config file already exists from an older version, tighten it to 0600.
   Process {
-    id: mkdirProc
-    command: ["mkdir", "-p", root.configDir]
+    id: setupProc
+    command: ["sh", "-c",
+      "mkdir -p \"$1\" && chmod 700 \"$1\"; [ ! -f \"$2\" ] || chmod 600 \"$2\"",
+      "sh", root.configDir, root.configPath]
+  }
+
+  // Writes the config through a shell that creates the file 0600 (see
+  // flushSave). Coalesces bursts of saves.
+  Process {
+    id: saveProc
+    onStarted: {
+      if (root.pendingSave !== "") {
+        saveProc.write(root.pendingSave)
+        root.pendingSave = ""
+      }
+      saveProc.stdinEnabled = false
+    }
+    onExited: function(code) {
+      root.saveBusy = false
+      if (root.pendingSave !== "") root.flushSave()
+    }
   }
 
   Process {
@@ -396,6 +436,6 @@ Item {
   }
 
   Component.onCompleted: {
-    mkdirProc.running = true
+    setupProc.running = true
   }
 }
