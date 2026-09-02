@@ -169,13 +169,13 @@ Item {
 
   function noteError(repo, message) {
     if (root.lastError !== "") return
-    var msg = String(message || "")
+    var msg = Model.truncate(String(message || ""), Model.MAX_STRING_LENGTH)
     if (/rate limit/i.test(msg)) {
       // The limit is shared across every GitHub repository, not a property of
       // this one — attribute it globally and make the fix obvious.
       root.lastError = "GitHub rate limit reached (60/hour without a token) \u00b7 add a token in Settings"
     } else {
-      root.lastError = repo + ": " + msg
+      root.lastError = Model.truncate(repo + ": " + msg, Model.MAX_STRING_LENGTH)
     }
   }
 
@@ -196,7 +196,12 @@ Item {
       return
     }
     var acc = root.accumulator[task.repo] || []
-    root.accumulator[task.repo] = acc.concat(result.items)
+    var merged = acc.concat(result.items)
+    // Cap each repo's accumulator before concatenation: no more than the four
+    // endpoint pages (each already capped) can contribute.
+    if (merged.length > Model.MAX_ITEMS_PER_ENDPOINT * 4)
+      merged = merged.slice(0, Model.MAX_ITEMS_PER_ENDPOINT * 4)
+    root.accumulator[task.repo] = merged
   }
 
   // Merge a repo's fresh items into the feed and advance its cursors. The
@@ -221,7 +226,7 @@ Item {
 
     var toNotify = []
     if (!baseline && root.notify) {
-      for (var i = 0; i < items.length; i++) {
+      for (var i = 0; i < items.length && toNotify.length < Model.MAX_ITEMS_PER_ENDPOINT; i++) {
         if (items[i].epoch > notifiedEpoch) toNotify.push(items[i])
       }
     }
@@ -235,7 +240,11 @@ Item {
     root.rebuild()
     root.commitConfig()
 
-    if (toNotify.length > 0) root.batchNotify = root.batchNotify.concat(toNotify)
+    if (toNotify.length > 0) {
+      root.batchNotify = root.batchNotify.concat(toNotify)
+      if (root.batchNotify.length > Model.MAX_FEED_ITEMS)
+        root.batchNotify = root.batchNotify.slice(0, Model.MAX_FEED_ITEMS)
+    }
   }
 
   // Recompute the flat feed and unread count from the per-repo item lists and
@@ -415,7 +424,9 @@ Item {
       } else {
         // Invalid or unsafe config: fall back to defaults and surface why.
         root.applyConfig("")
-        root.lastError = root.configReadError !== "" ? root.configReadError : "config could not be read safely; using defaults"
+        root.lastError = Model.truncate(
+          root.configReadError !== "" ? root.configReadError : "config could not be read safely; using defaults",
+          Model.MAX_STRING_LENGTH)
       }
     }
   }

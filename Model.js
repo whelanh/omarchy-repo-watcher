@@ -20,6 +20,7 @@ var MAX_SEEN_ENTRIES = 200
 var MAX_KEY_LENGTH = 200
 var MAX_STRING_LENGTH = 500
 var MAX_FEED_ITEMS = 2000
+var MAX_ITEMS_PER_ENDPOINT = 100
 
 // Kinds surfaced by the plugin, in the order the panel and notifications show
 // them.
@@ -137,6 +138,23 @@ function repoWebUrl(key) {
   if (!r) return ""
   if (r.forge === "sourceforge") return FORGES.sourceforge.webBase + "/p/" + r.repo
   return FORGES[r.forge].webBase + "/" + r.owner + "/" + r.repo
+}
+
+// Accept a remote URL only when it is HTTPS on the forge's own host and under
+// the expected repository path. Anything else is dropped, so an API/RSS body
+// cannot steer the browser to an arbitrary host or path.
+function safeItemUrl(url, repoKey) {
+  var r = parseRepoKey(repoKey)
+  if (!r) return ""
+  var u = String(url === undefined || url === null ? "" : url).replace(/^\s+|\s+$/g, "")
+  if (u === "") return ""
+  var host = FORGES[r.forge].webBase.replace(/^https?:\/\//, "").toLowerCase()
+  var m = u.match(/^https:\/\/([^\/]+)(\/.*)$/)
+  if (!m || m[1].toLowerCase() !== host) return ""
+  var expected = r.forge === "sourceforge"
+    ? "/p/" + r.repo + "/"
+    : "/" + r.owner + "/" + r.repo + "/"
+  return m[2].indexOf(expected) === 0 ? u : ""
 }
 
 function repoForgeLabel(key) {
@@ -343,7 +361,7 @@ function parseResponse(kind, raw, repoKey, status) {
 
 function parseCommits(data, repoKey) {
   var out = []
-  for (var i = 0; i < data.length; i++) {
+  for (var i = 0; i < data.length && out.length < MAX_ITEMS_PER_ENDPOINT; i++) {
     var c = data[i]
     if (!c || !c.sha) continue
     var commit = c.commit || {}
@@ -362,7 +380,7 @@ function parseCommits(data, repoKey) {
 
 function parseIssuesAndPulls(data, repoKey) {
   var out = []
-  for (var i = 0; i < data.length; i++) {
+  for (var i = 0; i < data.length && out.length < MAX_ITEMS_PER_ENDPOINT; i++) {
     var it = data[i]
     if (!it || it.number === undefined || it.number === null) continue
     var isPr = it.pull_request !== undefined && it.pull_request !== null
@@ -379,7 +397,7 @@ function parseIssuesAndPulls(data, repoKey) {
 
 function parseReleases(data, repoKey) {
   var out = []
-  for (var i = 0; i < data.length; i++) {
+  for (var i = 0; i < data.length && out.length < MAX_ITEMS_PER_ENDPOINT; i++) {
     var rel = data[i]
     if (!rel) continue
     var epoch = Date.parse(String(rel.published_at || rel.created_at || ""))
@@ -396,7 +414,7 @@ function parseReleases(data, repoKey) {
 
 function parseDiscussionNodes(nodes, repoKey) {
   var out = []
-  for (var i = 0; i < nodes.length; i++) {
+  for (var i = 0; i < nodes.length && out.length < MAX_ITEMS_PER_ENDPOINT; i++) {
     var d = nodes[i]
     if (!d) continue
     var epoch = Date.parse(String(d.createdAt || ""))
@@ -422,6 +440,7 @@ function parseRss(raw, repoKey) {
   var itemRe = /<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/g
   var m
   while ((m = itemRe.exec(text)) !== null) {
+    if (out.length >= MAX_ITEMS_PER_ENDPOINT) break
     var block = m[1]
     var title = rssField(block, "title")
     var link = rssField(block, "link")
@@ -479,7 +498,7 @@ function makeItem(kind, repo, epoch, url, title, author, number, ref, action) {
     kind: kind,
     repo: truncate(repo, MAX_KEY_LENGTH),
     epoch: epoch,
-    url: truncate(url, MAX_STRING_LENGTH),
+    url: truncate(safeItemUrl(url, repo), MAX_STRING_LENGTH),
     title: truncate(title, MAX_STRING_LENGTH),
     author: truncate(author, MAX_STRING_LENGTH),
     number: number === undefined || number === null ? null : number,
@@ -636,14 +655,17 @@ if (typeof module !== "undefined") {
     MAX_KEY_LENGTH: MAX_KEY_LENGTH,
     MAX_STRING_LENGTH: MAX_STRING_LENGTH,
     MAX_FEED_ITEMS: MAX_FEED_ITEMS,
+    MAX_ITEMS_PER_ENDPOINT: MAX_ITEMS_PER_ENDPOINT,
     KINDS: KINDS,
     KIND_ORDER: KIND_ORDER,
     DEFAULTS: DEFAULTS,
     FORGES: FORGES,
     safeMap: safeMap,
+    truncate: truncate,
     normalizeRepoUrl: normalizeRepoUrl,
     parseRepoKey: parseRepoKey,
     repoWebUrl: repoWebUrl,
+    safeItemUrl: safeItemUrl,
     repoForgeLabel: repoForgeLabel,
     repoLabel: repoLabel,
     repoHue: repoHue,

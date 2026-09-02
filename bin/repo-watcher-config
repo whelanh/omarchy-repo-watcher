@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
-# Secure, bounded I/O for Repo Watcher's config.json.
+# Secure, bounded, descriptor-bound I/O for Repo Watcher's config.json.
 #
-# The config file can hold a GitHub token, so every access is descriptor-bound
-# and fail-closed: the directory is verified private (0700, owned, not a
-# symlink), the file is opened without following symlinks, checked to be a
-# regular file owned by the user with no group/other bits, and read with a byte
-# cap. Writes go through an exclusive random-named 0600 temporary file that is
-# fsync'd and atomically renamed, so a failed write never corrupts the previous
-# config.
+# Every operation resolves the directory once and then works relative to the
+# retained directory file descriptor, so a concurrent rename or symlink swap of
+# the directory or any ancestor cannot redirect the read/write/mode operation.
 #
-# Usage:
 #   repo-watcher-config setup <path>   # create/verify the private directory,
 #                                      # tighten an existing file to 0600
 #   repo-watcher-config read  <path>   # bounded verified read to stdout
 #   repo-watcher-config write <path>   # bounded write from stdin
 #
-# Exit codes: 0 ok, 1 no config (read of a missing file), 2 error (see stderr).
+# Exit codes: 0 ok, 1 no config (read of a missing file), 2 error (stderr).
 
 import os
+import secrets
 import stat
 import sys
-import tempfile
 
 MAX_CONFIG_BYTES = 65536  # 64 KiB, matching Model.MAX_CONFIG_BYTES
+
+_DIRFLAGS = os.O_DIRECTORY | os.O_NOFOLLOW
 
 
 def fail(message):
@@ -30,108 +27,154 @@ def fail(message):
     sys.exit(2)
 
 
-def ensure_dir(path):
-    """Create or verify the config directory is private, owned, and not a symlink."""
-    d = os.path.dirname(path)
-    if os.path.lexists(d):
-        if os.path.islink(d):
-            fail("config directory is a symlink")
-        st = os.stat(d)
-        if not stat.S_ISDIR(st.st_mode):
-            fail("config parent is not a directory")
-        if st.st_uid != os.getuid():
-            fail("config directory is not owned by the current user")
-        if st.st_mode & 0o077:
-            os.chmod(d, 0o700)
-    else:
-        os.mkdir(d, 0o700)
-    return d
+def open_dir_chain(path):
+    """Open directory `path` descriptor-bound.
+
+    Every component from the filesystem root down is opened with
+    O_DIRECTORY|O_NOFOLLOW, so a symlink or non-directory at any level fails
+    closed. The final component is created 0700 if missing. Returns a dir fd.
+    """
+    path = os.path.abspath(path)
+    comps = path.split("/")
+    current = os.open("/", _DIRFLAGS)
+    try:
+        last = len(comps) - 1
+        for i in range(1, last + 1):
+            comp = comps[i]
+            if comp == "":
+                continue
+            is_leaf = i == last
+            try:
+                fd = os.open(comp, _DIRFLAGS, dir_fd=current)
+            except FileNotFoundError:
+                if not is_leaf:
+                    raise
+                os.mkdir(comp, 0o700, dir_fd=current)
+                fd = os.open(comp, _DIRFLAGS, dir_fd=current)
+            os.close(current)
+            current = fd
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def ensure_private_dir(dfd):
+    """Verify (and repair) that the retained config-directory fd is ours and 0700."""
+    st = os.fstat(dfd)
+    if not stat.S_ISDIR(st.st_mode):
+        fail("config directory is not a directory")
+    if st.st_uid != os.getuid():
+        fail("config directory is not owned by the current user")
+    if st.st_mode & 0o077:
+        os.fchmod(dfd, 0o700)
 
 
 def cmd_setup(path):
-    d = ensure_dir(path)
-    if os.path.lexists(path):
-        if os.path.islink(path):
-            fail("refusing to touch a symlink at the config path")
-        st = os.stat(path)
+    leaf = os.path.basename(path)
+    dfd = open_dir_chain(os.path.dirname(path))
+    try:
+        ensure_private_dir(dfd)
+        try:
+            st = os.stat(leaf, dir_fd=dfd, follow_symlinks=False)
+        except FileNotFoundError:
+            sys.exit(0)
         if not stat.S_ISREG(st.st_mode):
             fail("config path exists but is not a regular file")
         if st.st_uid != os.getuid():
             fail("config file is not owned by the current user")
         if st.st_mode & 0o077:
-            os.chmod(path, 0o600)
+            os.chmod(leaf, 0o600, dir_fd=dfd, follow_symlinks=False)
+    finally:
+        os.close(dfd)
     sys.exit(0)
 
 
 def cmd_read(path):
-    # O_NOFOLLOW rejects symlinks; O_NONBLOCK keeps a FIFO/special file from
-    # blocking the open, letting fstat reject it as non-regular below.
+    leaf = os.path.basename(path)
+    dfd = open_dir_chain(os.path.dirname(path))
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except FileNotFoundError:
-        sys.exit(1)
-    except OSError as e:
-        fail("cannot open config: " + str(e))
+        ensure_private_dir(dfd)
+        try:
+            fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+        except FileNotFoundError:
+            sys.exit(1)
+        except OSError as e:
+            fail("cannot open config: " + str(e))
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                fail("config is not a regular file")
+            if st.st_uid != os.getuid():
+                fail("config is not owned by the current user")
+            if st.st_mode & 0o077:
+                fail("config is readable by group or others")
+            if st.st_size > MAX_CONFIG_BYTES:
+                fail("config exceeds %d bytes" % MAX_CONFIG_BYTES)
 
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            fail("config is not a regular file")
-        if st.st_uid != os.getuid():
-            fail("config is not owned by the current user")
-        if st.st_mode & 0o077:
-            fail("config is readable by group or others")
-        if st.st_size > MAX_CONFIG_BYTES:
-            fail("config exceeds %d bytes" % MAX_CONFIG_BYTES)
+            data = b""
+            while len(data) <= MAX_CONFIG_BYTES:
+                chunk = os.read(fd, MAX_CONFIG_BYTES + 1 - len(data))
+                if not chunk:
+                    break
+                data += chunk
+            if len(data) > MAX_CONFIG_BYTES:
+                fail("config exceeds %d bytes" % MAX_CONFIG_BYTES)
 
-        data = b""
-        while len(data) <= MAX_CONFIG_BYTES:
-            chunk = os.read(fd, MAX_CONFIG_BYTES + 1 - len(data))
-            if not chunk:
-                break
-            data += chunk
-        if len(data) > MAX_CONFIG_BYTES:
-            fail("config exceeds %d bytes" % MAX_CONFIG_BYTES)
-
-        sys.stdout.buffer.write(data)
-        sys.stdout.buffer.flush()
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        os.close(dfd)
     sys.exit(0)
 
 
 def cmd_write(path):
-    d = ensure_dir(path)
-    data = sys.stdin.buffer.read(MAX_CONFIG_BYTES + 1)
-    if len(data) > MAX_CONFIG_BYTES:
-        fail("refusing to write more than %d bytes" % MAX_CONFIG_BYTES)
-    if not data:
-        fail("refusing to write an empty config")
-
-    fd, tmp = tempfile.mkstemp(prefix=".config.", dir=d)
+    leaf = os.path.basename(path)
+    dfd = open_dir_chain(os.path.dirname(path))
     try:
-        os.fchmod(fd, 0o600)
-        os.write(fd, data)
-        os.fsync(fd)
-        os.close(fd)
-        fd = -1
-        os.rename(tmp, path)
-        # Make the rename durable by fsyncing the directory.
-        dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+        ensure_private_dir(dfd)
+        data = sys.stdin.buffer.read(MAX_CONFIG_BYTES + 1)
+        if len(data) > MAX_CONFIG_BYTES:
+            fail("refusing to write more than %d bytes" % MAX_CONFIG_BYTES)
+        if not data:
+            fail("refusing to write an empty config")
+
+        # Exclusive random-named temp, opened relative to the retained dir fd.
+        tfd = -1
+        tmp = None
+        for _ in range(8):
+            tmp = ".config." + secrets.token_hex(12)
+            try:
+                tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dfd)
+                break
+            except FileExistsError:
+                tfd = -1
+                tmp = None
+        if tfd < 0:
+            fail("could not create a private temporary file")
+
         try:
+            os.write(tfd, data)
+            os.fsync(tfd)
+            os.close(tfd)
+            tfd = -1
+            os.rename(tmp, leaf, src_dir_fd=dfd, dst_dir_fd=dfd)
             os.fsync(dfd)
         finally:
-            os.close(dfd)
+            if tfd >= 0:
+                try:
+                    os.close(tfd)
+                except OSError:
+                    pass
+            if tmp is not None:
+                try:
+                    os.unlink(tmp, dir_fd=dfd)
+                except OSError:
+                    pass
     finally:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        os.close(dfd)
     sys.exit(0)
 
 
@@ -140,14 +183,17 @@ def main():
         fail("usage: repo-watcher-config <setup|read|write> <path>")
     command = sys.argv[1]
     path = sys.argv[2]
-    if command == "setup":
-        cmd_setup(path)
-    elif command == "read":
-        cmd_read(path)
-    elif command == "write":
-        cmd_write(path)
-    else:
-        fail("unknown command: " + command)
+    try:
+        if command == "setup":
+            cmd_setup(path)
+        elif command == "read":
+            cmd_read(path)
+        elif command == "write":
+            cmd_write(path)
+        else:
+            fail("unknown command: " + command)
+    except OSError as e:
+        fail("config path is not a safe directory: " + str(e))
 
 
 if __name__ == "__main__":
