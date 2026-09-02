@@ -81,7 +81,11 @@ Codeberg and SourceForge do not need a token.
 
 - Talks only to the public APIs/feeds of GitHub, Codeberg, and SourceForge, for
   the repositories you add.
-- The token, if set, is stored in `~/.config/omarchy/repo-watcher/config.json`.
+- The token, if set, is stored in `~/.config/omarchy/repo-watcher/config.json`,
+  which is written `0600` inside a `0700` directory. The config is read with
+  bounded, symlink-safe, owner/mode-checked access and never written
+  world-readable.
+- Requires `curl` and `python3` (both standard on Omarchy/Arch).
 - Does not request elevated privileges, runs no background service, and starts
   no second Quickshell process (the polling lives in the shell's own service).
 

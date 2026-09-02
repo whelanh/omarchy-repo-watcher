@@ -24,6 +24,11 @@ Item {
   readonly property string configDir: home + "/.config/omarchy/repo-watcher"
   readonly property string configPath: configDir + "/config.json"
 
+  // Secure, bounded config I/O lives in a Python helper so reads and writes
+  // are descriptor-bound (no-follow, regular-file, owner/mode, byte caps).
+  readonly property string helperScript: decodeURIComponent(
+    String(Qt.resolvedUrl("bin/repo-watcher-config")).replace(/^file:\/\//, ""))
+
   // Single source of truth, plus derived state for the bar and panel.
   property var config: Model.normalizeConfig("")
   property bool configLoaded: false
@@ -46,6 +51,8 @@ Item {
   // Config-write coalescing (see saveConfig/flushSave).
   property string pendingSave: ""
   property bool saveBusy: false
+  property string configReadText: ""
+  property string configReadError: ""
 
   readonly property bool autoRefresh: config.autoRefresh === true
   readonly property bool notify: config.notify === true
@@ -62,17 +69,8 @@ Item {
   // Config file
   // ---------------------------------------------------------------------------
 
-  // The FileView is read/watch-only. Writes go through saveConfig(), which
-  // writes via a shell so the token-bearing file is created with mode 0600.
-  FileView {
-    id: configFile
-    path: root.configPath
-    watchChanges: true
-    printErrors: false
-    onLoaded: root.applyConfig(text())
-    onLoadFailed: root.applyConfig("")
-    onFileChanged: reload()
-  }
+  // Loading and saving go through the Python helper (see the Processes at the
+  // bottom). applyConfig is invoked from loadProc once the file is read.
 
   function applyConfig(text) {
     root.config = Model.normalizeConfig(text)
@@ -90,21 +88,25 @@ Item {
     }
   }
 
-  // Persist the config with a private mode. Writes are coalesced: a burst of
-  // saves during a refresh writes once, and a save requested mid-write is
-  // flushed when the current one finishes. The file holds an optional GitHub
-  // token, so it must not be created world-readable.
+  // Persist the config with a private mode via the helper. Writes are
+  // coalesced: a burst of saves during a refresh writes once, and a save
+  // requested mid-write is flushed when the current one finishes.
   function saveConfig() {
     root.pendingSave = JSON.stringify(root.config, null, 2) + "\n"
+    // Bound the payload before launch so an oversized config is never piped
+    // to the writer.
+    if (root.pendingSave.length > Model.MAX_CONFIG_BYTES) {
+      root.pendingSave = ""
+      root.lastError = "config too large to save"
+      return
+    }
     if (!root.saveBusy) root.flushSave()
   }
 
   function flushSave() {
     if (root.saveBusy || root.pendingSave === "") return
     root.saveBusy = true
-    saveProc.command = ["sh", "-c",
-      "umask 077; mkdir -p \"$1\" && chmod 700 \"$1\" && cat > \"$2.tmp\" && chmod 600 \"$2.tmp\" && mv -f \"$2.tmp\" \"$2\"",
-      "sh", root.configDir, root.configPath]
+    saveProc.command = ["timeout", "15", "python3", root.helperScript, "write", root.configPath]
     saveProc.stdinEnabled = true
     saveProc.running = true
   }
@@ -241,7 +243,6 @@ Item {
   function rebuild() {
     var seen = root.config.seen || {}
     var flat = []
-    var unread = 0
     for (var repo in root.itemsByRepo) {
       var items = root.itemsByRepo[repo] || []
       var state = seen[repo] || null
@@ -251,11 +252,15 @@ Item {
         var copy = {}
         for (var k in it) copy[k] = it[k]
         copy.isNew = it.epoch > readEpoch
-        if (copy.isNew) unread++
         flat.push(copy)
       }
     }
     flat.sort(function(a, b) { return b.epoch - a.epoch })
+    // Aggregate cap: never hold more than MAX_FEED_ITEMS in memory or on
+    // screen, and derive the unread count from the capped set.
+    if (flat.length > Model.MAX_FEED_ITEMS) flat = flat.slice(0, Model.MAX_FEED_ITEMS)
+    var unread = 0
+    for (var j = 0; j < flat.length; j++) if (flat[j].isNew) unread++
     root.feed = flat
     root.unreadCount = unread
   }
@@ -381,17 +386,42 @@ Item {
   // Processes
   // ---------------------------------------------------------------------------
 
-  // One-time setup + migration: create the directory private (0700) and, if a
-  // config file already exists from an older version, tighten it to 0600.
+  // One-time setup + migration: create the directory private (0700), tighten
+  // an existing file to 0600, then load the config. Both run through the
+  // helper under a deadline.
   Process {
     id: setupProc
-    command: ["sh", "-c",
-      "mkdir -p \"$1\" && chmod 700 \"$1\"; [ ! -f \"$2\" ] || chmod 600 \"$2\"",
-      "sh", root.configDir, root.configPath]
+    command: ["timeout", "15", "python3", root.helperScript, "setup", root.configPath]
+    onExited: function(code) { loadProc.running = true }
   }
 
-  // Writes the config through a shell that creates the file 0600 (see
-  // flushSave). Coalesces bursts of saves.
+  Process {
+    id: loadProc
+    command: ["timeout", "15", "python3", root.helperScript, "read", root.configPath]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.configReadText = String(text || "")
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.configReadError = String(text || "").trim()
+    }
+    onExited: function(code) {
+      if (code === 0) {
+        root.applyConfig(root.configReadText)
+      } else if (code === 1) {
+        // No config file yet (fresh install): use defaults.
+        root.applyConfig("")
+      } else {
+        // Invalid or unsafe config: fall back to defaults and surface why.
+        root.applyConfig("")
+        root.lastError = root.configReadError !== "" ? root.configReadError : "config could not be read safely; using defaults"
+      }
+    }
+  }
+
+  // Writes the config through the helper, which creates the file 0600 inside
+  // the verified 0700 directory (see flushSave). Coalesces bursts of saves.
   Process {
     id: saveProc
     onStarted: {
@@ -403,7 +433,14 @@ Item {
     }
     onExited: function(code) {
       root.saveBusy = false
-      if (root.pendingSave !== "") root.flushSave()
+      if (code === 0) {
+        if (root.pendingSave !== "") root.flushSave()
+      } else {
+        // Any failure leaves the previous config intact (temp + rename);
+        // surface it and drop the pending write rather than retry forever.
+        root.lastError = "failed to save config"
+        root.pendingSave = ""
+      }
     }
   }
 

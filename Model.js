@@ -10,6 +10,17 @@
 
 var MAX_JSON_BYTES = 1048576
 
+// Hard caps on config and derived data, so an attacker-controlled config file
+// (or an unexpectedly large API response) cannot create an unbounded request
+// queue, feed model, notification batch, or serialized save.
+var MAX_CONFIG_BYTES = 65536
+var MAX_REPOS = 50
+var MAX_TOKEN_LENGTH = 255
+var MAX_SEEN_ENTRIES = 200
+var MAX_KEY_LENGTH = 200
+var MAX_STRING_LENGTH = 500
+var MAX_FEED_ITEMS = 2000
+
 // Kinds surfaced by the plugin, in the order the panel and notifications show
 // them.
 var KINDS = {
@@ -150,6 +161,21 @@ function repoHue(key) {
   var h = 0
   for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360
   return h
+}
+
+// Prototype-free object, so keys loaded from the config file (or otherwise
+// external) cannot collide with Object.prototype (e.g. "__proto__").
+function safeMap() {
+  return Object.create(null)
+}
+
+function isSafeKey(key) {
+  return key !== "__proto__" && key !== "constructor" && key !== "prototype"
+}
+
+function truncate(value, max) {
+  var s = String(value === undefined || value === null ? "" : value)
+  return s.length > max ? s.slice(0, max) : s
 }
 
 // ---------------------------------------------------------------------------
@@ -451,21 +477,22 @@ function parseRfc2822(value) {
 function makeItem(kind, repo, epoch, url, title, author, number, ref, action) {
   return {
     kind: kind,
-    repo: repo,
+    repo: truncate(repo, MAX_KEY_LENGTH),
     epoch: epoch,
-    url: String(url || ""),
-    title: String(title || ""),
-    author: String(author || ""),
+    url: truncate(url, MAX_STRING_LENGTH),
+    title: truncate(title, MAX_STRING_LENGTH),
+    author: truncate(author, MAX_STRING_LENGTH),
     number: number === undefined || number === null ? null : number,
-    ref: ref === undefined || ref === null ? null : ref,
-    action: String(action || "")
+    ref: ref === undefined || ref === null ? null : truncate(ref, MAX_STRING_LENGTH),
+    action: truncate(action, MAX_STRING_LENGTH)
   }
 }
 
 function commitTitle(message) {
   var text = String(message === undefined || message === null ? "" : message)
     .split("\n")[0].replace(/^\s+|\s+$/g, "")
-  return text === "" ? "(no message)" : text
+  if (text === "") return "(no message)"
+  return truncate(text, MAX_STRING_LENGTH)
 }
 
 // ---------------------------------------------------------------------------
@@ -511,34 +538,76 @@ function relativeTime(epoch, nowEpoch) {
 // Config
 // ---------------------------------------------------------------------------
 
-function normalizeConfig(raw) {
-  var data = {}
-  try { data = JSON.parse(String(raw || "")) || {} } catch (e) { data = {} }
-  if (typeof data !== "object") data = {}
+function defaultsConfig() {
+  return {
+    repos: [],
+    token: "",
+    autoRefresh: true,
+    refreshHours: DEFAULTS.refreshHours,
+    notify: true,
+    maxEvents: DEFAULTS.maxEvents,
+    seen: safeMap()
+  }
+}
 
+function normalizeConfig(raw) {
+  var text = String(raw === undefined || raw === null ? "" : raw)
+  // Producer-side byte cap: reject an oversized config before parsing it.
+  if (text.length > MAX_CONFIG_BYTES) return defaultsConfig()
+
+  var data = {}
+  try { data = JSON.parse(text) || {} } catch (e) { data = {} }
+  if (typeof data !== "object" || Array.isArray(data)) data = {}
+
+  // Repos: bounded count, each normalized, length-capped, and deduplicated.
   var repos = []
-  var seen = {}
+  var seenSet = safeMap()
   var list = Array.isArray(data.repos) ? data.repos : []
-  for (var i = 0; i < list.length; i++) {
+  for (var i = 0; i < list.length && repos.length < MAX_REPOS; i++) {
     var parsed = normalizeRepoUrl(list[i])
-    if (!parsed || seen[parsed.key]) continue
-    seen[parsed.key] = true
+    if (!parsed || parsed.key.length > MAX_KEY_LENGTH || seenSet[parsed.key]) continue
+    seenSet[parsed.key] = true
     repos.push(parsed.key)
   }
+
+  // Token: bounded length, whitespace-trimmed.
+  var token = typeof data.token === "string" ? data.token.replace(/^\s+|\s+$/g, "") : ""
+  if (token.length > MAX_TOKEN_LENGTH) token = ""
 
   var maxEvents = clampPage(data.maxEvents)
   var refreshHours = parseInt(data.refreshHours, 10)
   if (!isFinite(refreshHours) || refreshHours < 1) refreshHours = DEFAULTS.refreshHours
   if (refreshHours > 168) refreshHours = 168
 
+  // Seen: prototype-free map, bounded entries, safe length-capped keys, and
+  // numeric-only cursors.
+  var seen = safeMap()
+  var rawSeen = (data.seen && typeof data.seen === "object" && !Array.isArray(data.seen)) ? data.seen : null
+  if (rawSeen) {
+    var keys = Object.keys(rawSeen)
+    for (var k = 0; k < keys.length; k++) {
+      var key = keys[k]
+      if (!isSafeKey(key) || key.length > MAX_KEY_LENGTH) continue
+      var entry = rawSeen[key]
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue
+      var read = Number(entry.read)
+      var notified = Number(entry.notified)
+      seen[key] = {
+        read: isFinite(read) ? read : 0,
+        notified: isFinite(notified) ? notified : 0
+      }
+      if (Object.keys(seen).length >= MAX_SEEN_ENTRIES) break
+    }
+  }
+
   return {
     repos: repos,
-    token: typeof data.token === "string" ? data.token : "",
+    token: token,
     autoRefresh: data.autoRefresh !== false,
     refreshHours: refreshHours,
     notify: data.notify !== false,
     maxEvents: maxEvents,
-    seen: (data.seen && typeof data.seen === "object") ? data.seen : {}
+    seen: seen
   }
 }
 
@@ -560,10 +629,18 @@ function groupByRepo(feed) {
 if (typeof module !== "undefined") {
   module.exports = {
     MAX_JSON_BYTES: MAX_JSON_BYTES,
+    MAX_CONFIG_BYTES: MAX_CONFIG_BYTES,
+    MAX_REPOS: MAX_REPOS,
+    MAX_TOKEN_LENGTH: MAX_TOKEN_LENGTH,
+    MAX_SEEN_ENTRIES: MAX_SEEN_ENTRIES,
+    MAX_KEY_LENGTH: MAX_KEY_LENGTH,
+    MAX_STRING_LENGTH: MAX_STRING_LENGTH,
+    MAX_FEED_ITEMS: MAX_FEED_ITEMS,
     KINDS: KINDS,
     KIND_ORDER: KIND_ORDER,
     DEFAULTS: DEFAULTS,
     FORGES: FORGES,
+    safeMap: safeMap,
     normalizeRepoUrl: normalizeRepoUrl,
     parseRepoKey: parseRepoKey,
     repoWebUrl: repoWebUrl,

@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+# Secure, bounded I/O for Repo Watcher's config.json.
+#
+# The config file can hold a GitHub token, so every access is descriptor-bound
+# and fail-closed: the directory is verified private (0700, owned, not a
+# symlink), the file is opened without following symlinks, checked to be a
+# regular file owned by the user with no group/other bits, and read with a byte
+# cap. Writes go through an exclusive random-named 0600 temporary file that is
+# fsync'd and atomically renamed, so a failed write never corrupts the previous
+# config.
+#
+# Usage:
+#   repo-watcher-config setup <path>   # create/verify the private directory,
+#                                      # tighten an existing file to 0600
+#   repo-watcher-config read  <path>   # bounded verified read to stdout
+#   repo-watcher-config write <path>   # bounded write from stdin
+#
+# Exit codes: 0 ok, 1 no config (read of a missing file), 2 error (see stderr).
+
+import os
+import stat
+import sys
+import tempfile
+
+MAX_CONFIG_BYTES = 65536  # 64 KiB, matching Model.MAX_CONFIG_BYTES
+
+
+def fail(message):
+    sys.stderr.write("repo-watcher-config: " + message + "\n")
+    sys.exit(2)
+
+
+def ensure_dir(path):
+    """Create or verify the config directory is private, owned, and not a symlink."""
+    d = os.path.dirname(path)
+    if os.path.lexists(d):
+        if os.path.islink(d):
+            fail("config directory is a symlink")
+        st = os.stat(d)
+        if not stat.S_ISDIR(st.st_mode):
+            fail("config parent is not a directory")
+        if st.st_uid != os.getuid():
+            fail("config directory is not owned by the current user")
+        if st.st_mode & 0o077:
+            os.chmod(d, 0o700)
+    else:
+        os.mkdir(d, 0o700)
+    return d
+
+
+def cmd_setup(path):
+    d = ensure_dir(path)
+    if os.path.lexists(path):
+        if os.path.islink(path):
+            fail("refusing to touch a symlink at the config path")
+        st = os.stat(path)
+        if not stat.S_ISREG(st.st_mode):
+            fail("config path exists but is not a regular file")
+        if st.st_uid != os.getuid():
+            fail("config file is not owned by the current user")
+        if st.st_mode & 0o077:
+            os.chmod(path, 0o600)
+    sys.exit(0)
+
+
+def cmd_read(path):
+    # O_NOFOLLOW rejects symlinks; O_NONBLOCK keeps a FIFO/special file from
+    # blocking the open, letting fstat reject it as non-regular below.
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        sys.exit(1)
+    except OSError as e:
+        fail("cannot open config: " + str(e))
+
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            fail("config is not a regular file")
+        if st.st_uid != os.getuid():
+            fail("config is not owned by the current user")
+        if st.st_mode & 0o077:
+            fail("config is readable by group or others")
+        if st.st_size > MAX_CONFIG_BYTES:
+            fail("config exceeds %d bytes" % MAX_CONFIG_BYTES)
+
+        data = b""
+        while len(data) <= MAX_CONFIG_BYTES:
+            chunk = os.read(fd, MAX_CONFIG_BYTES + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+        if len(data) > MAX_CONFIG_BYTES:
+            fail("config exceeds %d bytes" % MAX_CONFIG_BYTES)
+
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    finally:
+        os.close(fd)
+    sys.exit(0)
+
+
+def cmd_write(path):
+    d = ensure_dir(path)
+    data = sys.stdin.buffer.read(MAX_CONFIG_BYTES + 1)
+    if len(data) > MAX_CONFIG_BYTES:
+        fail("refusing to write more than %d bytes" % MAX_CONFIG_BYTES)
+    if not data:
+        fail("refusing to write an empty config")
+
+    fd, tmp = tempfile.mkstemp(prefix=".config.", dir=d)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, data)
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.rename(tmp, path)
+        # Make the rename durable by fsyncing the directory.
+        dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    sys.exit(0)
+
+
+def main():
+    if len(sys.argv) != 3:
+        fail("usage: repo-watcher-config <setup|read|write> <path>")
+    command = sys.argv[1]
+    path = sys.argv[2]
+    if command == "setup":
+        cmd_setup(path)
+    elif command == "read":
+        cmd_read(path)
+    elif command == "write":
+        cmd_write(path)
+    else:
+        fail("unknown command: " + command)
+
+
+if __name__ == "__main__":
+    main()
