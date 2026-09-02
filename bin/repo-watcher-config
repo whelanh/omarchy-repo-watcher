@@ -27,6 +27,21 @@ def fail(message):
     sys.exit(2)
 
 
+def write_all(fd, data):
+    """Write all of `data` to `fd`, looping over short writes.
+
+    os.write may write fewer bytes than requested; a single call that ignores
+    the return value would publish a truncated temporary over the prior valid
+    config. Abort if no progress is made.
+    """
+    view = memoryview(data)
+    while view:
+        n = os.write(fd, view)
+        if n <= 0:
+            raise OSError("short write: no bytes written")
+        view = view[n:]
+
+
 def open_dir_chain(path):
     """Open directory `path` descriptor-bound.
 
@@ -156,7 +171,7 @@ def cmd_write(path):
             fail("could not create a private temporary file")
 
         try:
-            os.write(tfd, data)
+            write_all(tfd, data)
             os.fsync(tfd)
             os.close(tfd)
             tfd = -1

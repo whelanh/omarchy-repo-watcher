@@ -140,9 +140,10 @@ function repoWebUrl(key) {
   return FORGES[r.forge].webBase + "/" + r.owner + "/" + r.repo
 }
 
-// Accept a remote URL only when it is HTTPS on the forge's own host and under
-// the expected repository path. Anything else is dropped, so an API/RSS body
-// cannot steer the browser to an arbitrary host or path.
+// Accept a remote URL only when it is HTTPS on the forge's own host and, after
+// percent-decoding and resolving "."/".." segments, still lies under the
+// expected repository path. A dot or encoded segment that would normalize the
+// path outside the repository is rejected before the browser ever sees it.
 function safeItemUrl(url, repoKey) {
   var r = parseRepoKey(repoKey)
   if (!r) return ""
@@ -151,10 +152,33 @@ function safeItemUrl(url, repoKey) {
   var host = FORGES[r.forge].webBase.replace(/^https?:\/\//, "").toLowerCase()
   var m = u.match(/^https:\/\/([^\/]+)(\/.*)$/)
   if (!m || m[1].toLowerCase() !== host) return ""
+
+  var path = m[2]
+  var cut = path.search(/[?#]/)
+  if (cut !== -1) path = path.slice(0, cut)
+  var decoded
+  try { decoded = decodeURIComponent(path) } catch (e) { return "" }
   var expected = r.forge === "sourceforge"
     ? "/p/" + r.repo + "/"
     : "/" + r.owner + "/" + r.repo + "/"
-  return m[2].indexOf(expected) === 0 ? u : ""
+  return canonicalPath(decoded).indexOf(expected) === 0 ? u : ""
+}
+
+// Resolve "." and ".." path segments (and collapse duplicate slashes) into a
+// canonical absolute path. A ".." at the root is dropped rather than escaping.
+function canonicalPath(path) {
+  var out = []
+  var parts = String(path || "").split("/")
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i]
+    if (p === "" || p === ".") continue
+    if (p === "..") {
+      if (out.length > 0) out.pop()
+      continue
+    }
+    out.push(p)
+  }
+  return "/" + out.join("/")
 }
 
 function repoForgeLabel(key) {
